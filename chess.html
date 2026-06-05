@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Шахматы</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    color: #eee;
+  }
+  .container {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 20px;
+  }
+  .board-wrap {
+    background: #16213e;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  }
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    width: min(480px, 80vw);
+    height: min(480px, 80vw);
+    border: 3px solid #0f3460;
+    user-select: none;
+  }
+  .cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: min(48px, 8vw);
+    cursor: pointer;
+    transition: background .15s;
+    position: relative;
+  }
+  .cell.light { background: #e8d5b7; }
+  .cell.dark  { background: #7a5c43; }
+  .cell.selected { box-shadow: inset 0 0 0 4px #f9ca24; }
+  .cell.legal::after {
+    content: '';
+    position: absolute;
+    width: 28%;
+    height: 28%;
+    background: rgba(0,0,0,.25);
+    border-radius: 50%;
+  }
+  .cell.capture-hint { box-shadow: inset 0 0 0 4px rgba(220,50,50,.7); }
+  .cell.last-move { box-shadow: inset 0 0 0 3px rgba(249,202,36,.6); }
+  .cell.king-check { box-shadow: inset 0 0 0 4px #e74c3c; animation: pulse .6s infinite alternate; }
+  @keyframes pulse { to { box-shadow: inset 0 0 0 6px #c0392b; } }
+  .piece { line-height: 1; pointer-events: none; }
+  .panel {
+    background: #16213e;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+    min-width: 220px;
+    max-width: 300px;
+  }
+  .panel h3 { margin-bottom: 10px; color: #f9ca24; text-align: center; }
+  .status { text-align: center; font-size: 1.2em; margin-bottom: 12px; padding: 8px; border-radius: 8px; background: #0f3460; }
+  .status.win { background: #27ae60; }
+  .captured { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 12px; min-height: 28px; font-size: 24px; }
+  .captured span { opacity: .7; }
+  .moves-list {
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: 14px;
+    font-family: 'Consolas', monospace;
+    background: #0f3460;
+    border-radius: 8px;
+    padding: 8px;
+  }
+  .moves-list div { padding: 2px 4px; }
+  .moves-list div:nth-child(odd) { background: rgba(255,255,255,.05); }
+  button {
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    font-size: 16px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    background: #f9ca24;
+    color: #1a1a2e;
+    font-weight: bold;
+    transition: background .2s;
+  }
+  button:hover { background: #f0b909; }
+  button:active { transform: scale(.97); }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="board-wrap">
+    <div class="board" id="board"></div>
+  </div>
+  <div class="panel">
+    <h3>♟ Шахматы</h3>
+    <div class="status" id="status">Ход белых</div>
+    <div><strong>Взято белыми:</strong></div>
+    <div class="captured" id="capturedByWhite"></div>
+    <div><strong>Взято чёрными:</strong></div>
+    <div class="captured" id="capturedByBlack"></div>
+    <div class="moves-list" id="movesList"></div>
+    <button onclick="resetGame()">🔄 Новая игра</button>
+  </div>
+</div>
+
+<script>
+// ─── Инициализация ─────────────────────────────────────────────
+const PIECES = {
+  wK: '♔', wQ: '♕', wR: '♖', wB: '♗', wN: '♘', wP: '♙',
+  bK: '♚', bQ: '♛', bR: '♜', bB: '♝', bN: '♞', bP: '♟',
+};
+const INITIAL = [
+  ['bR','bN','bB','bQ','bK','bB','bN','bR'],
+  ['bP','bP','bP','bP','bP','bP','bP','bP'],
+  [null,null,null,null,null,null,null,null],
+  [null,null,null,null,null,null,null,null],
+  [null,null,null,null,null,null,null,null],
+  [null,null,null,null,null,null,null,null],
+  ['wP','wP','wP','wP','wP','wP','wP','wP'],
+  ['wR','wN','wB','wQ','wK','wB','wN','wR'],
+];
+
+let board, turn, selected, legalMoves, moveHistory;
+let capturedWhite, capturedBlack;
+let enPassantTarget = null;         // [r,c] куда можно бить на проходе
+let castlingRights = { wK: true, wQ: true, bK: true, bQ: true };
+let gameOver = false;
+
+function cloneBoard(b) { return b.map(r => [...r]); }
+
+function initGame() {
+  board = cloneBoard(INITIAL);
+  turn = 'w';
+  selected = null;
+  legalMoves = [];
+  moveHistory = [];
+  capturedWhite = [];
+  capturedBlack = [];
+  enPassantTarget = null;
+  castlingRights = { wK: true, wQ: true, bK: true, bQ: true };
+  gameOver = false;
+  render();
+}
+
+// ─── Поиск короля ──────────────────────────────────────────────
+function findKing(color) {
+  const k = color + 'K';
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++)
+      if (board[r][c] === k) return [r,c];
+  return null;
+}
+
+// ─── Генератор ходов (без фильтрации шаха) ─────────────────────
+function rawMoves(r, c) {
+  const piece = board[r][c];
+  if (!piece) return [];
+  const color = piece[0];
+  const type  = piece[1];
+  const moves = [];
+  const add = (tr, tc) => { if (tr>=0&&tr<8&&tc>=0&&tc<8) moves.push([tr,tc]); };
+
+  const slide = (dr, dc) => {
+    for (let i=1; i<8; i++) {
+      const tr=r+dr*i, tc=c+dc*i;
+      if (tr<0||tr>7||tc<0||tc>7) break;
+      const t = board[tr][tc];
+      if (!t) { moves.push([tr,tc]); continue; }
+      if (t[0] !== color) moves.push([tr,tc]);
+      break;
+    }
+  };
+
+  switch (type) {
+    case 'P': {
+      const dir = color === 'w' ? -1 : 1;
+      const startRow = color === 'w' ? 6 : 1;
+      // вперёд
+      if (!board[r+dir]?.[c]) {
+        moves.push([r+dir, c]);
+        if (r === startRow && !board[r+2*dir]?.[c]) moves.push([r+2*dir, c]);
+      }
+      // взятие
+      for (const dc of [-1,1]) {
+        const tc = c+dc, tr = r+dir;
+        if (tr>=0&&tr<8&&tc>=0&&tc<8) {
+          const t = board[tr][tc];
+          if (t && t[0] !== color) moves.push([tr,tc]);
+          // en passant
+          if (enPassantTarget && tr===enPassantTarget[0] && tc===enPassantTarget[1])
+            moves.push([tr,tc]);
+        }
+      }
+      break;
+    }
+    case 'N':
+      for (const [dr,dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) add(r+dr, c+dc);
+      break;
+    case 'B': for (const [dr,dc] of [[-1,-1],[-1,1],[1,-1],[1,1]]) slide(dr,dc); break;
+    case 'R': for (const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]) slide(dr,dc); break;
+    case 'Q': for (const [dr,dc] of [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]]) slide(dr,dc); break;
+    case 'K':
+      for (const [dr,dc] of [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]) add(r+dr, c+dc);
+      // рокировка
+      if (color==='w' && r===7 && c===4) {
+        if (castlingRights.wK && !board[7][5] && !board[7][6] &&
+            board[7][7]==='wR' && !isAttacked(7,4,'b') && !isAttacked(7,5,'b') && !isAttacked(7,6,'b'))
+          moves.push([7,6]);
+        if (castlingRights.wQ && !board[7][3] && !board[7][2] && !board[7][1] &&
+            board[7][0]==='wR' && !isAttacked(7,4,'b') && !isAttacked(7,3,'b') && !isAttacked(7,2,'b'))
+          moves.push([7,2]);
+      }
+      if (color==='b' && r===0 && c===4) {
+        if (castlingRights.bK && !board[0][5] && !board[0][6] &&
+            board[0][7]==='bR' && !isAttacked(0,4,'w') && !isAttacked(0,5,'w') && !isAttacked(0,6,'w'))
+          moves.push([0,6]);
+        if (castlingRights.bQ && !board[0][3] && !board[0][2] && !board[0][1] &&
+            board[0][0]==='bR' && !isAttacked(0,4,'w') && !isAttacked(0,3,'w') && !isAttacked(0,2,'w'))
+          moves.push([0,2]);
+      }
+      break;
+  }
+
+  // фильтр: не бить своих
+  return moves.filter(([tr,tc]) => !board[tr][tc] || board[tr][tc][0] !== color);
+}
+
+// ─── Атакована ли клетка цветом attacker ────────────────────────
+function isAttacked(r, c, attackerColor) {
+  for (let rr = 0; rr < 8; rr++) {
+    for (let cc = 0; cc < 8; cc++) {
+      const p = board[rr][cc];
+      if (!p || p[0] !== attackerColor) continue;
+      const type = p[1];
+      const dr = r - rr, dc = c - cc;
+      const adr = Math.abs(dr), adc = Math.abs(dc);
+
+      if (type === 'K') { if (adr<=1 && adc<=1) return true; }
+      else if (type === 'N') { if ((adr===2 && adc===1) || (adr===1 && adc===2)) return true; }
+      else if (type === 'P') {
+        const dir = attackerColor === 'w' ? -1 : 1;
+        if (dr === dir && adc === 1) return true;
+      }
+      else if (type === 'R') { if ((dr===0 && dc!==0) || (dc===0 && dr!==0)) { if (clearPath(rr,cc,r,c)) return true; } }
+      else if (type === 'B') { if (adr === adc && adr > 0) { if (clearPath(rr,cc,r,c)) return true; } }
+      else if (type === 'Q') {
+        if ((dr===0 || dc===0 || adr===adc) && (adr>0 || adc>0)) { if (clearPath(rr,cc,r,c)) return true; }
+      }
+    }
+  }
+  return false;
+}
+
+function clearPath(r1,c1,r2,c2) {
+  const dr = Math.sign(r2-r1), dc = Math.sign(c2-c1);
+  let r=r1+dr, c=c1+dc;
+  while (r!==r2 || c!==c2) { if (board[r][c]) return false; r+=dr; c+=dc; }
+  return true;
+}
+
+// ─── Ход, не оставляющий короля под шахом ──────────────────────
+function legalMovesFiltered(r, c) {
+  const color = board[r][c]?.[0];
+  return rawMoves(r, c).filter(([tr,tc]) => {
+    // симулируем ход
+    const saved = board[tr][tc];
+    board[tr][tc] = board[r][c];
+    board[r][c] = null;
+    const kingPos = findKing(color);
+    const inCheck = kingPos && isAttacked(kingPos[0], kingPos[1], color==='w'?'b':'w');
+    // откат
+    board[r][c] = board[tr][tc];
+    board[tr][tc] = saved;
+    return !inCheck;
+  });
+}
+
+// ─── Выполнение хода ───────────────────────────────────────────
+function makeMove(r, c, tr, tc) {
+  const piece = board[r][c];
+  const color = piece[0];
+  const type  = piece[1];
+  const captured = board[tr][tc];
+
+  // Обновление прав рокировки
+  if (type === 'K') { castlingRights[color+'K'] = false; castlingRights[color+'Q'] = false; }
+  if (type === 'R') {
+    if (color==='w' && r===7) { if (c===0) castlingRights.wQ = false; if (c===7) castlingRights.wK = false; }
+    if (color==='b' && r===0) { if (c===0) castlingRights.bQ = false; if (c===7) castlingRights.bK = false; }
+  }
+  // если взяли ладью в углу
+  if (captured && captured[1]==='R') {
+    if (tr===7 && tc===0) castlingRights.wQ = false;
+    if (tr===7 && tc===7) castlingRights.wK = false;
+    if (tr===0 && tc===0) castlingRights.bQ = false;
+    if (tr===0 && tc===7) castlingRights.bK = false;
+  }
+
+  // En passant target
+  enPassantTarget = null;
+  if (type === 'P' && Math.abs(tr-r) === 2) enPassantTarget = [(r+tr)>>1, c];
+
+  // En passant взятие
+  let epCapture = null;
+  if (type === 'P' && tr === enPassantTarget?.[0] && tc === enPassantTarget?.[1]) {
+    epCapture = board[r][tc]; // пешка, которую бьём на проходе
+    board[r][tc] = null;
+  }
+
+  // Рокировка — двигаем ладью
+  if (type === 'K' && Math.abs(tc-c) === 2) {
+    const rookFromC = tc === 6 ? 7 : 0;
+    const rookToC   = tc === 6 ? 5 : 3;
+    board[r][rookToC] = board[r][rookFromC];
+    board[r][rookFromC] = null;
+  }
+
+  // Перемещаем фигуру
+  board[tr][tc] = piece;
+  board[r][c] = null;
+
+  // Запись взятых
+  if (captured) (color==='w'?capturedWhite:capturedBlack).push(captured);
+  if (epCapture) (color==='w'?capturedWhite:capturedBlack).push(epCapture);
+
+  return captured || epCapture;
+}
+
+// ─── Превращение пешки ─────────────────────────────────────────
+function promotePawn(tr, tc, color) {
+  const choices = ['Q','R','B','N'];
+  const choice = prompt('Превращение пешки:\nQ — ферзь\nR — ладья\nB — слон\nN — конь', 'Q');
+  const p = (choice && choices.includes(choice.toUpperCase())) ? choice.toUpperCase() : 'Q';
+  board[tr][tc] = color + p;
+}
+
+// ─── Запись хода в нотации ─────────────────────────────────────
+function moveNotation(r, c, tr, tc, piece, captured) {
+  const files = 'abcdefgh';
+  const type = piece[1];
+  let notation = '';
+  if (type === 'K' && Math.abs(tc-c)===2) notation = tc===6 ? 'O-O' : 'O-O-O';
+  else {
+    if (type !== 'P') notation += type;
+    if (captured && type==='P') notation += files[c];
+    if (captured) notation += 'x';
+    notation += files[tc] + (8-tr);
+  }
+  // флаг шаха/мата добавим в render
+  return notation;
+}
+
+// ─── Проверка мата / пата ──────────────────────────────────────
+function checkGameState() {
+  const color = turn;
+  for (let r = 0; r < 8; r++)
+    for (let c = 0; c < 8; c++)
+      if (board[r][c]?.[0] === color && legalMovesFiltered(r,c).length > 0)
+        return null; // есть ходы
+  const kingPos = findKing(color);
+  if (kingPos && isAttacked(kingPos[0], kingPos[1], color==='w'?'b':'w'))
+    return color === 'w' ? 'black' : 'white'; // мат
+  return 'stalemate'; // пат
+}
+
+// ─── Рендер ────────────────────────────────────────────────────
+let lastMove = null;
+function render() {
+  const boardEl = document.getElementById('board');
+  boardEl.innerHTML = '';
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell ' + ((r+c)%2===0 ? 'light' : 'dark');
+      cell.dataset.r = r;
+      cell.dataset.c = c;
+
+      const piece = board[r][c];
+      if (piece) {
+        const span = document.createElement('span');
+        span.className = 'piece';
+        span.textContent = PIECES[piece];
+        cell.appendChild(span);
+      }
+
+      // Подсветка выбранной
+      if (selected && selected[0]===r && selected[1]===c) cell.classList.add('selected');
+      // Подсветка легальных ходов
+      const isLegal = legalMoves.some(([lr,lc]) => lr===r && lc===c);
+      if (isLegal) {
+        cell.classList.add(board[r][c] ? 'capture-hint' : 'legal');
+      }
+      // Последний ход
+      if (lastMove && ((lastMove[0]===r&&lastMove[1]===c) || (lastMove[2]===r&&lastMove[3]===c)))
+        cell.classList.add('last-move');
+      // Шах королю
+      if (!gameOver) {
+        const king = findKing(turn);
+        if (king && king[0]===r && king[1]===c && isAttacked(r,c,turn==='w'?'b':'w'))
+          cell.classList.add('king-check');
+      }
+
+      cell.addEventListener('click', () => onCellClick(r, c));
+      boardEl.appendChild(cell);
+    }
+  }
+
+  // Статус
+  const statusEl = document.getElementById('status');
+  statusEl.className = 'status';
+  if (gameOver) {
+    statusEl.classList.add('win');
+    if (gameOver === 'white') statusEl.textContent = '🏆 Белые победили! Мат.';
+    else if (gameOver === 'black') statusEl.textContent = '🏆 Чёрные победили! Мат.';
+    else statusEl.textContent = '🤝 Пат. Ничья.';
+  } else {
+    const king = findKing(turn);
+    const inCheck = king && isAttacked(king[0], king[1], turn==='w'?'b':'w');
+    statusEl.textContent = (turn==='w'?'⚪ Ход белых':'⚫ Ход чёрных') + (inCheck ? ' — ШАХ!' : '');
+  }
+
+  // Взятые фигуры
+  document.getElementById('capturedByWhite').innerHTML =
+    capturedWhite.map(p => '<span>'+PIECES[p]+'</span>').join('') || '—';
+  document.getElementById('capturedByBlack').innerHTML =
+    capturedBlack.map(p => '<span>'+PIECES[p]+'</span>').join('') || '—';
+
+  // История ходов
+  const ml = document.getElementById('movesList');
+  ml.innerHTML = moveHistory.length ? '' : '<div style="opacity:.5;text-align:center">Пока ходов нет</div>';
+  moveHistory.forEach((m, i) => {
+    const div = document.createElement('div');
+    div.textContent = `${Math.floor(i/2)+1}.${i%2===0 ? '' : '..'} ${m}`;
+    ml.appendChild(div);
+  });
+  ml.scrollTop = ml.scrollHeight;
+}
+
+// ─── Обработка клика ───────────────────────────────────────────
+function onCellClick(r, c) {
+  if (gameOver) return;
+
+  const piece = board[r][c];
+
+  // Если уже выбрана фигура и клик — легальный ход
+  if (selected) {
+    const moveMatch = legalMoves.find(([lr,lc]) => lr===r && lc===c);
+    if (moveMatch) {
+      executeMove(selected[0], selected[1], r, c);
+      return;
+    }
+  }
+
+  // Выбор своей фигуры
+  if (piece && piece[0] === turn) {
+    selected = [r, c];
+    legalMoves = legalMovesFiltered(r, c);
+    render();
+    return;
+  }
+
+  // Сброс
+  selected = null;
+  legalMoves = [];
+  render();
+}
+
+function executeMove(r, c, tr, tc) {
+  const piece = board[r][c];
+  const captured = board[tr][tc];
+  const notation = moveNotation(r, c, tr, tc, piece, captured);
+
+  makeMove(r, c, tr, tc);
+
+  // Превращение пешки
+  const color = piece[0];
+  if (piece[1]==='P' && (tr===0 || tr===7)) promotePawn(tr, tc, color);
+
+  // Обновление истории
+  moveHistory.push(notation);
+  lastMove = [r,c,tr,tc];
+
+  // Переключение хода
+  turn = turn === 'w' ? 'b' : 'w';
+  selected = null;
+  legalMoves = [];
+
+  // Проверка конца игры
+  const result = checkGameState();
+  if (result) {
+    gameOver = result;
+    // добавим # к нотации
+    if (result !== 'stalemate') moveHistory[moveHistory.length-1] += '#';
+  }
+
+  render();
+}
+
+function resetGame() {
+  initGame();
+  lastMove = null;
+}
+
+initGame();
+</script>
+</body>
+</html>
