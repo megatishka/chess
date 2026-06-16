@@ -314,16 +314,16 @@ function makeMove(r, c, tr, tc) {
     if (tr===0 && tc===7) castlingRights.bK = false;
   }
 
-  // En passant target
-  enPassantTarget = null;
-  if (type === 'P' && Math.abs(tr-r) === 2) enPassantTarget = [(r+tr)>>1, c];
-
   // En passant взятие
   let epCapture = null;
-  if (type === 'P' && tr === enPassantTarget?.[0] && tc === enPassantTarget?.[1]) {
+  if (type === 'P' && enPassantTarget && tr === enPassantTarget[0] && tc === enPassantTarget[1]) {
     epCapture = board[r][tc]; // пешка, которую бьём на проходе
     board[r][tc] = null;
   }
+
+  // En passant target
+  enPassantTarget = null;
+  if (type === 'P' && Math.abs(tr-r) === 2) enPassantTarget = [(r+tr)>>1, c];
 
   // Рокировка — двигаем ладью
   if (type === 'K' && Math.abs(tc-c) === 2) {
